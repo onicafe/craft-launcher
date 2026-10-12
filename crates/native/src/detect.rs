@@ -375,7 +375,11 @@ pub mod windows {
             }
         }
         let roots = program_files_roots();
-        exe_candidates(app, location.as_deref(), &roots).into_iter().chain(custom_exe_candidates(app, options, &roots)).find(|p| p.exists())
+        exe_candidates(app, location.as_deref(), &[])
+            .into_iter()
+            .chain(custom_exe_candidates(app, options, &roots))
+            .chain(exe_candidates(app, None, &roots))
+            .find(|p| p.exists())
     }
 
     pub(crate) fn program_files_roots() -> Vec<PathBuf> {

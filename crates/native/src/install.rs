@@ -1219,11 +1219,14 @@ pub mod windows {
             let mut cmd = process::command(msiexec());
             cmd.arg("/i").arg(msi).args(["/passive", "/norestart"]);
             if let Some(dir) = install_dir {
-                let path = dir.display();
-                cmd.arg(format!("INSTALLFOLDER={path}"))
-                    .arg(format!("INSTALLDIR={path}"))
-                    .arg(format!("APPLICATIONFOLDER={path}"))
-                    .arg(format!("ARPINSTALLLOCATION={path}"));
+                use std::os::windows::process::CommandExt;
+                let _ = std::fs::create_dir_all(dir);
+                let normalized = dir.to_string_lossy().replace('/', "\\");
+                let clean = normalized.trim_end_matches('\\');
+                let value = if clean.ends_with(':') { format!("{clean}\\\\") } else { clean.replace('"', "\"\"") };
+                for prop in ["INSTALLFOLDER", "INSTALLDIR", "APPLICATIONFOLDER", "ARPINSTALLLOCATION"] {
+                    cmd.raw_arg(format!("{prop}=\"{value}\""));
+                }
             }
             let status = cmd.status().map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
             explain(status.code())
