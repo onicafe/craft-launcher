@@ -1496,3 +1496,40 @@ fn with_animations_on_hovering_a_card_animates() {
     let frames = frames_to_hover_the_next_card(&mut h);
     assert!(frames >= 10, "{frames} frames");
 }
+
+#[test]
+fn per_app_shortcuts_dialog_toggles_and_syncs_shortcuts() {
+    let (mut h, sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(4);
+
+    // Open the … menu for Photocraft (the first installed card).
+    let menu_btn = h.get_all_by_label("…").next().expect("… menu button");
+    menu_btn.click();
+    h.run_steps(2);
+
+    h.get_by_label("Shortcuts…").click();
+    h.run_steps(2);
+
+    // Toggle the Desktop shortcut checkbox (default false -> true).
+    h.get_by_label("Desktop shortcut").click();
+    h.run_steps(2);
+
+    let commands = sent.borrow().clone();
+    assert!(
+        commands.contains(&Command::SyncShortcuts { app: "photocraft".into(), desktop: true, start_menu: true }),
+        "expected SyncShortcuts command, got: {commands:?}"
+    );
+
+    // Reset to global defaults and verify it syncs back.
+    h.get_by_label("Use global defaults").click();
+    h.run_steps(2);
+
+    let commands = sent.borrow().clone();
+    assert!(
+        commands.contains(&Command::SyncShortcuts { app: "photocraft".into(), desktop: false, start_menu: true }),
+        "expected SyncShortcuts reset command, got: {commands:?}"
+    );
+
+    h.get_by_label("Done").click();
+    h.run_steps(2);
+}

@@ -72,6 +72,7 @@ pub(crate) struct Toast {
 pub(crate) enum Dialog {
     Notes(String),
     ConfirmUninstall(String),
+    AppShortcuts(String),
     Settings,
     LauncherUpdate(artcraft_launcher_core::Release),
 }
@@ -83,6 +84,7 @@ impl Dialog {
         match self {
             Dialog::Notes(id) => ("notes", id),
             Dialog::ConfirmUninstall(id) => ("uninstall", id),
+            Dialog::AppShortcuts(id) => ("app-shortcuts", id),
             Dialog::Settings => ("settings", ""),
             Dialog::LauncherUpdate(r) => ("launcher-update", &r.tag),
         }
@@ -142,6 +144,8 @@ pub struct LauncherUi {
     /// Versions of apps or the launcher already queued for auto-update during this session,
     /// preventing repeated install loops if an update fails or is in progress.
     pub(crate) auto_update_attempted: std::collections::BTreeSet<(String, String)>,
+    /// Detected shortcut state on disk for each installed app.
+    pub(crate) detected_shortcuts: std::collections::BTreeMap<String, artcraft_launcher_core::protocol::AppShortcutState>,
 }
 
 /// The language to draw in: the preference, or English where it needs a CJK font the system
@@ -199,6 +203,7 @@ impl LauncherUi {
             last_detect: 0,
             was_focused: true,
             auto_update_attempted: std::collections::BTreeSet::new(),
+            detected_shortcuts: std::collections::BTreeMap::new(),
         }
     }
 
@@ -266,7 +271,13 @@ impl LauncherUi {
     /// Non-drawing work: runs every frame and also while the window is hidden in the tray.
     pub fn logic(&mut self, ctx: &egui::Context, host: &mut dyn Host) {
         set_current(crate::i18n::Lang::from_pref(&self.settings.language));
-        let options = BackendOptions { kinds: self.settings.preferred_kinds.clone(), prereleases: self.settings.prereleases };
+        let options = BackendOptions {
+            kinds: self.settings.preferred_kinds.clone(),
+            prereleases: self.settings.prereleases,
+            create_desktop_shortcut: self.settings.create_desktop_shortcut,
+            create_start_menu_shortcut: self.settings.create_start_menu_shortcut,
+            app_shortcuts: self.settings.app_shortcuts.clone(),
+        };
         if self.sent_options.as_ref() != Some(&options) {
             self.backend.send(Command::Configure(options.clone()));
             self.sent_options = Some(options);
@@ -335,6 +346,12 @@ impl LauncherUi {
                     e.detected = true;
                 }
                 true
+            }
+            Event::ShortcutsDetected(shortcuts) => {
+                for (app, state) in shortcuts {
+                    self.detected_shortcuts.insert(app, state);
+                }
+                false
             }
             Event::Progress { app, phase } => {
                 if app == artcraft_launcher_core::catalog::LAUNCHER_ID {

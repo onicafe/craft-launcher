@@ -25,6 +25,7 @@ impl LauncherUi {
         let response = match &dialog {
             Dialog::Notes(id) => modal.show(ctx, |ui| close = self.notes_dialog(ui, id)),
             Dialog::ConfirmUninstall(id) => modal.show(ctx, |ui| close = self.uninstall_dialog(ui, id)),
+            Dialog::AppShortcuts(id) => modal.show(ctx, |ui| close = self.app_shortcuts_dialog(ui, id)),
             Dialog::Settings => modal.show(ctx, |ui| close = self.settings_dialog(ui, host)),
             Dialog::LauncherUpdate(r) => modal.show(ctx, |ui| close = self.launcher_update_dialog(ui, r)),
         };
@@ -177,6 +178,55 @@ impl LauncherUi {
         close
     }
 
+    fn app_shortcuts_dialog(&mut self, ui: &mut egui::Ui, id: &str) -> bool {
+        let Some(entry) = self.entry(id).cloned() else { return true };
+        let t = Tokens::get(ui.ctx());
+        ui.set_width(440.0_f32.min((ui.ctx().content_rect().width() - 80.0).max(0.0)));
+        Self::title(ui, crate::icons::app(id), entry.app.name, tl!("Shortcuts"));
+        ui.label(
+            RichText::new(tl!(
+                "Choose which shortcuts to keep for this app. Changes apply immediately for installed apps and are preserved across updates."
+            ))
+            .color(t.muted),
+        );
+        ui.add_space(12.0);
+
+        let detected = self.detected_shortcuts.get(id).copied();
+        let (mut desktop, mut start_menu) = self.settings.effective_shortcuts(id, detected);
+        let desktop_changed = ui.checkbox(&mut desktop, tl!("Desktop shortcut")).changed();
+        let start_menu_changed = ui.checkbox(&mut start_menu, tl!("Start menu / application menu shortcut")).changed();
+        if desktop_changed || start_menu_changed {
+            self.settings
+                .app_shortcuts
+                .insert(id.to_string(), artcraft_launcher_core::protocol::AppShortcutPrefs { desktop: Some(desktop), start_menu: Some(start_menu) });
+            self.detected_shortcuts.insert(id.to_string(), artcraft_launcher_core::protocol::AppShortcutState { desktop, start_menu });
+            if entry.installed.is_some() {
+                self.send(Command::SyncShortcuts { app: id.to_string(), desktop, start_menu });
+            }
+        }
+
+        ui.add_space(20.0);
+        let mut close = false;
+        let has_override = self.settings.app_shortcuts.contains_key(id);
+        ui.horizontal(|ui| {
+            if has_override && widgets::button(ui, tl!("Use global defaults"), Kind::Secondary, 0.0).clicked() {
+                self.settings.app_shortcuts.remove(id);
+                let desktop = self.settings.create_desktop_shortcut;
+                let start_menu = self.settings.create_start_menu_shortcut;
+                self.detected_shortcuts.insert(id.to_string(), artcraft_launcher_core::protocol::AppShortcutState { desktop, start_menu });
+                if entry.installed.is_some() {
+                    self.send(Command::SyncShortcuts { app: id.to_string(), desktop, start_menu });
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::button(ui, tl!("Done"), Kind::Primary, 90.0).clicked() {
+                    close = true;
+                }
+            });
+        });
+        close
+    }
+
     fn settings_dialog(&mut self, ui: &mut egui::Ui, host: &mut dyn Host) -> bool {
         // Leave room for the frame (48 px) and a 16 px gutter on each side.
         let viewport = ui.ctx().content_rect();
@@ -281,6 +331,12 @@ impl LauncherUi {
         }
         ui.checkbox(&mut self.settings.notify, tl!("Notify me when an installed app has an update"));
         ui.checkbox(&mut self.settings.prereleases, tl!("Include pre-releases (betas and release candidates)"));
+
+        if self.caps.manage_apps {
+            section(ui, tl!("Shortcuts"));
+            ui.checkbox(&mut self.settings.create_desktop_shortcut, tl!("Create a desktop shortcut when installing apps"));
+            ui.checkbox(&mut self.settings.create_start_menu_shortcut, tl!("Create a Start menu / application menu shortcut when installing apps"));
+        }
 
         if self.caps.manage_apps && self.platform.is_some_and(|p| p.os == Os::Linux) {
             section(ui, tl!("Installing on Linux"));
