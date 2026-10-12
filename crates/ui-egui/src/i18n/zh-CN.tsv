@@ -311,3 +311,13 @@ soundcraft	Recording, editing and mixing audio	音频录制、编辑与混音
 @msg	{name} installed: {version} (this release publishes no checksum, so only its size was checked)	{name} 已安装：{version}（此版本未发布校验和，因此只检查了文件大小）
 @msg	{name} was removed	{name} 已卸载
 @msg	{name} is running. Quit it, then try again.	{name} 正在运行。请先退出，然后重试。
+	Installation location	安装位置
+	Browse…	浏览…
+	Reset	重置
+	Used for AppImage installs on Linux.	用于 Linux 上的 AppImage 安装。
+	Group installed apps in a 'Craft Suite' subfolder	将已安装的应用集中放在“Craft Suite”子文件夹中
+	Installation folder…	安装文件夹…
+	Installation folder for {name}	{name} 的安装文件夹
+	Choose a custom folder for this app, or leave it blank to use the default installation location.	为此应用选择自定义文件夹，或留空以使用默认安装位置。
+	Use default	使用默认
+	Save	保存

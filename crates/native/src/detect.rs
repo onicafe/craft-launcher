@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use artcraft_launcher_core::protocol::{BackendOptions, SUITE_FOLDER_NAME};
 use artcraft_launcher_core::{CraftApp, InstallSource, Installed, version};
 
 use crate::manifest::Manifest;
@@ -34,18 +35,89 @@ impl Snapshot {
     }
 }
 
+/// Expands a leading `~` or `~/` to the user's home folder when available.
+pub fn expand_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix(r"~\"))
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(trimmed)
+}
+
+fn path_ends_with_ignore_case(path: &Path, suffix: &str) -> bool {
+    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(suffix))
+}
+
+/// Target folder for a Windows MSI install when a custom location or `Craft Suite` subfolder is configured.
+/// Returns `None` when the default MSI location (`C:\Program Files\<App>`) should be used unchanged.
+pub fn windows_install_dir(app: &CraftApp, options: &BackendOptions, default_root: &Path) -> Option<PathBuf> {
+    if let Some(dir) = options.custom_app_dir(app.id) {
+        return Some(expand_path(dir));
+    }
+    if let Some(root) = options.custom_root_dir() {
+        let mut path = expand_path(root);
+        if options.suite_subfolder && !path_ends_with_ignore_case(&path, SUITE_FOLDER_NAME) {
+            path = path.join(SUITE_FOLDER_NAME);
+        }
+        if !app.names().chain(app.stems()).any(|n| path_ends_with_ignore_case(&path, n)) {
+            path = path.join(app.name);
+        }
+        return Some(path);
+    }
+    if options.suite_subfolder {
+        return Some(default_root.join(SUITE_FOLDER_NAME).join(app.name));
+    }
+    None
+}
+
+/// Target folder for a Linux AppImage install, honoring per-app, global root, and `Craft Suite` subfolder settings.
+pub fn appimage_install_dir(app: &CraftApp, options: &BackendOptions, default_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = options.custom_app_dir(app.id) {
+        return Some(expand_path(dir));
+    }
+    let mut base = options.custom_root_dir().map(expand_path).or_else(|| default_dir.map(Path::to_path_buf))?;
+    if options.suite_subfolder && !path_ends_with_ignore_case(&base, SUITE_FOLDER_NAME) {
+        base = base.join(SUITE_FOLDER_NAME);
+    }
+    Some(base)
+}
+
+/// Target folder for a macOS `.app` bundle install, honoring per-app, global root, and `Craft Suite` subfolder settings.
+pub fn macos_install_dir(app: &CraftApp, options: &BackendOptions, default_dir: &Path) -> PathBuf {
+    if let Some(dir) = options.custom_app_dir(app.id) {
+        return expand_path(dir);
+    }
+    let mut base = options.custom_root_dir().map(expand_path).unwrap_or_else(|| default_dir.to_path_buf());
+    if options.suite_subfolder && !path_ends_with_ignore_case(&base, SUITE_FOLDER_NAME) {
+        base = base.join(SUITE_FOLDER_NAME);
+    }
+    base
+}
+
 /// What's installed of `app`, best source first.
 pub fn detect(app: &CraftApp, manifest: &Manifest, snapshot: &Snapshot) -> Option<Installed> {
-    let _ = snapshot;
+    detect_with_options(app, manifest, snapshot, &BackendOptions::default())
+}
+
+/// What's installed of `app`, checking configured custom folders as well.
+pub fn detect_with_options(app: &CraftApp, manifest: &Manifest, snapshot: &Snapshot, options: &BackendOptions) -> Option<Installed> {
+    let _ = (snapshot, options);
     if let Some(found) = from_manifest(app, manifest) {
         return Some(found);
     }
     #[cfg(target_os = "macos")]
-    return macos::detect(app);
+    return macos::detect_with_options(app, options);
     #[cfg(windows)]
-    return windows::detect(app);
+    return windows::detect_with_options(app, options);
     #[cfg(target_os = "linux")]
-    return linux::detect(app, snapshot);
+    return linux::detect_with_options(app, snapshot, options);
     #[cfg(target_os = "freebsd")]
     return freebsd::detect(app);
     #[allow(unreachable_code)]
@@ -109,6 +181,33 @@ fn exe_candidates(app: &CraftApp, location: Option<&Path>, program_files: &[Path
     dirs.flat_map(|d| app.stems().map(move |s| d.join(format!("{s}.exe")))).collect()
 }
 
+/// Additional Windows exe candidates from configured custom folders and `Craft Suite` subfolders.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn custom_exe_candidates(app: &CraftApp, options: &BackendOptions, program_files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = options.custom_app_dir(app.id) {
+        let p = expand_path(dir);
+        dirs.push(p.clone());
+        for n in app.names() {
+            dirs.push(p.join(n));
+        }
+    }
+    if let Some(root) = options.custom_root_dir() {
+        let r = expand_path(root);
+        for n in app.names() {
+            dirs.push(r.join(SUITE_FOLDER_NAME).join(n));
+            dirs.push(r.join(n));
+        }
+        dirs.push(r);
+    }
+    for root in program_files {
+        for n in app.names() {
+            dirs.push(root.join(SUITE_FOLDER_NAME).join(n));
+        }
+    }
+    dirs.into_iter().flat_map(|d| app.stems().map(move |s| d.join(format!("{s}.exe")))).collect()
+}
+
 /// Version from `<app> --version` output. Binaries print the machine id (`photocraft 0.7.0`),
 /// the display name (`SoundCraft 0.5.0`), or a former id (`printcraft 0.2.1` for PdfCraft).
 #[cfg_attr(not(any(target_os = "linux", target_os = "freebsd")), allow(dead_code))]
@@ -145,16 +244,40 @@ pub mod macos {
 
     /// Where a `.app` might be: the system and the user's Applications folders.
     pub fn candidates(app: &CraftApp) -> Vec<PathBuf> {
+        candidates_with_options(app, &BackendOptions::default())
+    }
+
+    /// Where a `.app` might be, checking custom install locations and `Craft Suite` subfolders first.
+    pub fn candidates_with_options(app: &CraftApp, options: &BackendOptions) -> Vec<PathBuf> {
         let bundle = format!("{}.app", app.name);
-        let mut out = vec![Path::new("/Applications").join(&bundle)];
+        let mut out = Vec::new();
+        if let Some(dir) = options.custom_app_dir(app.id) {
+            let p = expand_path(dir);
+            if p.extension().is_some_and(|e| e == "app") {
+                out.push(p.clone());
+            }
+            out.push(p.join(&bundle));
+        }
+        if let Some(root) = options.custom_root_dir() {
+            let r = expand_path(root);
+            out.push(r.join(SUITE_FOLDER_NAME).join(&bundle));
+            out.push(r.join(&bundle));
+        }
+        out.push(Path::new("/Applications").join(SUITE_FOLDER_NAME).join(&bundle));
+        out.push(Path::new("/Applications").join(&bundle));
         if let Some(home) = dirs::home_dir() {
+            out.push(home.join("Applications").join(SUITE_FOLDER_NAME).join(&bundle));
             out.push(home.join("Applications").join(&bundle));
         }
         out
     }
 
     pub fn detect(app: &CraftApp) -> Option<Installed> {
-        candidates(app).iter().find_map(|p| read_bundle(app, p))
+        detect_with_options(app, &BackendOptions::default())
+    }
+
+    pub fn detect_with_options(app: &CraftApp, options: &BackendOptions) -> Option<Installed> {
+        candidates_with_options(app, options).iter().find_map(|p| read_bundle(app, p))
     }
 
     /// Reads a bundle's `Info.plist`; `None` unless it's really this app.
@@ -193,6 +316,11 @@ pub mod windows {
 
     /// Every Windows Installer entry for `app`, newest first.
     pub fn msi_installs(app: &CraftApp) -> Vec<MsiInstall> {
+        msi_installs_with_options(app, &BackendOptions::default())
+    }
+
+    /// Every Windows Installer entry for `app`, newest first, checking custom folders too.
+    pub fn msi_installs_with_options(app: &CraftApp, options: &BackendOptions) -> Vec<MsiInstall> {
         let mut out = Vec::new();
         for (hive, flags) in [(HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY), (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY), (HKEY_CURRENT_USER, 0)] {
             let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(UNINSTALL, KEY_READ | flags) else { continue };
@@ -205,7 +333,7 @@ pub mod windows {
                 }
                 let version = key.get_value::<String, _>("DisplayVersion").ok().and_then(|v| version::parse(&v));
                 let location: String = key.get_value("InstallLocation").unwrap_or_default();
-                let exe = exe_path(app, (!location.is_empty()).then(|| PathBuf::from(location)));
+                let exe = exe_path(app, (!location.is_empty()).then(|| PathBuf::from(location)), options);
                 out.push(MsiInstall { product_code: code, version, exe });
             }
         }
@@ -218,8 +346,8 @@ pub mod windows {
         out
     }
 
-    /// The app's exe: from `App Paths`, the install folder, or Program Files.
-    fn exe_path(app: &CraftApp, location: Option<PathBuf>) -> Option<PathBuf> {
+    /// The app's exe: from `App Paths`, `Software\<App>\InstallDir`, the install folder, custom folders, or Program Files.
+    fn exe_path(app: &CraftApp, location: Option<PathBuf>, options: &BackendOptions) -> Option<PathBuf> {
         for stem in app.stems() {
             let app_paths = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{stem}.exe");
             for flags in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
@@ -233,17 +361,39 @@ pub mod windows {
                 }
             }
         }
+        for name in app.names() {
+            let key_path = format!(r"SOFTWARE\{name}");
+            for flags in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+                if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(&key_path, KEY_READ | flags)
+                    && let Ok(dir) = key.get_value::<String, _>("InstallDir")
+                {
+                    let dir = PathBuf::from(dir.trim_matches('"'));
+                    if let Some(p) = app.stems().map(|s| dir.join(format!("{s}.exe"))).find(|p| p.exists()) {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        let roots = program_files_roots();
+        exe_candidates(app, location.as_deref(), &roots).into_iter().chain(custom_exe_candidates(app, options, &roots)).find(|p| p.exists())
+    }
+
+    pub(crate) fn program_files_roots() -> Vec<PathBuf> {
         let mut roots = Vec::new();
         for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(pf) = std::env::var_os(var) {
                 roots.push(PathBuf::from(pf));
             }
         }
-        exe_candidates(app, location.as_deref(), &roots).into_iter().find(|p| p.exists())
+        roots
     }
 
     pub fn detect(app: &CraftApp) -> Option<Installed> {
-        let m = msi_installs(app).into_iter().next()?;
+        detect_with_options(app, &BackendOptions::default())
+    }
+
+    pub fn detect_with_options(app: &CraftApp, options: &BackendOptions) -> Option<Installed> {
+        let m = msi_installs_with_options(app, options).into_iter().next()?;
         Some(Installed {
             version: m.version,
             source: InstallSource::Msi,
@@ -333,6 +483,53 @@ pub mod linux {
         vec![home.join("Applications"), home.join("AppImages"), home.join(".local").join("bin")]
     }
 
+    /// Every folder searched for AppImages of `app`, checking configured custom folders and
+    /// `Craft Suite` subfolders before the standard locations.
+    pub fn appimage_dirs_for(app: &CraftApp, options: &BackendOptions) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        let mut push = |p: PathBuf| {
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        };
+        if let Some(dir) = appimage_install_dir(app, options, appimage_dir().as_deref()) {
+            push(dir);
+        }
+        if let Some(root) = options.custom_root_dir() {
+            let r = expand_path(root);
+            push(r.join(SUITE_FOLDER_NAME));
+            push(r.join(app.name));
+            push(r);
+        }
+        if let Some(default) = appimage_dir() {
+            push(default.join(SUITE_FOLDER_NAME));
+            push(default);
+        }
+        for d in appimage_dirs() {
+            push(d);
+        }
+        dirs
+    }
+
+    /// Whether `dir` is a folder the launcher manages AppImages in for `app`.
+    pub fn is_managed_appimage_dir(app: &CraftApp, dir: &Path, options: &BackendOptions) -> bool {
+        if let Some(own) = appimage_dir()
+            && (dir == own || dir == own.join(SUITE_FOLDER_NAME))
+        {
+            return true;
+        }
+        if appimage_install_dir(app, options, appimage_dir().as_deref()).as_deref() == Some(dir) {
+            return true;
+        }
+        if let Some(root) = options.custom_root_dir() {
+            let r = expand_path(root);
+            if dir == r || dir == r.join(SUITE_FOLDER_NAME) || dir == r.join(app.name) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// AppImages of `app` in `dirs`, newest first (unknown versions last; earlier folders win
     /// ties).
     pub fn appimages_in(app: &CraftApp, dirs: &[PathBuf]) -> Vec<(PathBuf, Option<version::Version>)> {
@@ -367,13 +564,40 @@ pub mod linux {
         appimages_in(app, &appimage_dirs())
     }
 
+    /// AppImages of `app` in configured custom folders and the usual folders, newest first.
+    pub fn appimages_for(app: &CraftApp, options: &BackendOptions) -> Vec<(PathBuf, Option<version::Version>)> {
+        appimages_in(app, &appimage_dirs_for(app, options))
+    }
+
     /// AppImages of `app` in the launcher's own folder only (the ones an update replaces).
     pub fn launcher_appimages(app: &CraftApp) -> Vec<PathBuf> {
-        appimage_dir().map(|d| appimages_in(app, &[d]).into_iter().map(|(p, _)| p).collect()).unwrap_or_default()
+        launcher_appimages_for(app, &BackendOptions::default())
+    }
+
+    /// AppImages of `app` in the launcher's managed folders for `options` (the ones an update replaces).
+    pub fn launcher_appimages_for(app: &CraftApp, options: &BackendOptions) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(target) = appimage_install_dir(app, options, appimage_dir().as_deref()) {
+            dirs.push(target);
+        }
+        if let Some(own) = appimage_dir() {
+            let suite = own.join(SUITE_FOLDER_NAME);
+            if !dirs.contains(&suite) {
+                dirs.push(suite);
+            }
+            if !dirs.contains(&own) {
+                dirs.push(own);
+            }
+        }
+        appimages_in(app, &dirs).into_iter().map(|(p, _)| p).collect()
     }
 
     pub fn detect(app: &CraftApp, snapshot: &Snapshot) -> Option<Installed> {
-        if let Some((path, version)) = appimages(app).into_iter().next() {
+        detect_with_options(app, snapshot, &BackendOptions::default())
+    }
+
+    pub fn detect_with_options(app: &CraftApp, snapshot: &Snapshot, options: &BackendOptions) -> Option<Installed> {
+        if let Some((path, version)) = appimages_for(app, options).into_iter().next() {
             return Some(Installed { version, source: InstallSource::AppImage, location: path.display().to_string(), package: None });
         }
         let order = [InstallSource::Deb, InstallSource::Rpm, InstallSource::Pacman, InstallSource::Flatpak];
@@ -608,5 +832,42 @@ mod tests {
             let with_location: Vec<PathBuf> = std::iter::once(location.join(&exe)).chain(in_program_files).collect();
             assert_eq!(exe_candidates(a, Some(&location), &roots), with_location);
         }
+    }
+
+    #[test]
+    fn custom_install_dirs_resolve_root_suite_subfolder_and_per_app_overrides() {
+        let photo = CraftApp::by_id("photocraft").unwrap();
+        let word = CraftApp::by_id("wordcraft").unwrap();
+        let pf = Path::new(r"C:\Program Files");
+        let apps_dir = Path::new("/home/user/Applications");
+        let mac_dir = Path::new("/Applications");
+
+        // Default: Windows uses MSI's built-in default (None); Linux and macOS use their default folders.
+        let mut opts = BackendOptions::default();
+        assert_eq!(windows_install_dir(photo, &opts, pf), None);
+        assert_eq!(appimage_install_dir(photo, &opts, Some(apps_dir)), Some(apps_dir.to_path_buf()));
+        assert_eq!(macos_install_dir(photo, &opts, mac_dir), mac_dir.to_path_buf());
+
+        // Craft Suite subfolder only (#15).
+        opts.suite_subfolder = true;
+        assert_eq!(windows_install_dir(photo, &opts, pf), Some(pf.join("Craft Suite").join("PhotoCraft")));
+        assert_eq!(appimage_install_dir(photo, &opts, Some(apps_dir)), Some(apps_dir.join("Craft Suite")));
+        assert_eq!(macos_install_dir(photo, &opts, mac_dir), mac_dir.join("Craft Suite"));
+
+        // Global custom root folder + Craft Suite subfolder (#157, #93, #74, #76, #15).
+        opts.install_dir = Some(r"D:\CraftApps".into());
+        assert_eq!(windows_install_dir(photo, &opts, pf), Some(PathBuf::from(r"D:\CraftApps").join("Craft Suite").join("PhotoCraft")));
+        opts.suite_subfolder = false;
+        assert_eq!(windows_install_dir(photo, &opts, pf), Some(PathBuf::from(r"D:\CraftApps").join("PhotoCraft")));
+
+        opts.install_dir = Some("/home/user/.local/opt".into());
+        assert_eq!(appimage_install_dir(photo, &opts, Some(apps_dir)), Some(PathBuf::from("/home/user/.local/opt")));
+
+        // Per-app override wins over the global folder (#157, #93).
+        opts.app_install_dirs.insert("photocraft".into(), r"E:\Special\PhotoCraft".into());
+        assert_eq!(windows_install_dir(photo, &opts, pf), Some(PathBuf::from(r"E:\Special\PhotoCraft")));
+        assert_eq!(appimage_install_dir(photo, &opts, Some(apps_dir)), Some(PathBuf::from(r"E:\Special\PhotoCraft")));
+        // Other apps still use the global root.
+        assert_eq!(appimage_install_dir(word, &opts, Some(apps_dir)), Some(PathBuf::from("/home/user/.local/opt")));
     }
 }

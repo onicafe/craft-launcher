@@ -1496,3 +1496,67 @@ fn with_animations_on_hovering_a_card_animates() {
     let frames = frames_to_hover_the_next_card(&mut h);
     assert!(frames >= 10, "{frames} frames");
 }
+
+#[test]
+fn custom_install_location_and_suite_subfolder_and_per_app_folder_work() {
+    use artcraft_launcher_core::protocol::BackendOptions;
+    let (mut h, sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(6);
+
+    // 1. Global installation location and Craft Suite subfolder in Settings.
+    h.get_by_label("Settings").click();
+    h.run_steps(4);
+    h.get_by_label("Installation location");
+    h.get_by_label("Browse…").click();
+    h.run_steps(2);
+    assert!(sent.borrow().contains(&Command::PickInstallFolder { app: None }));
+
+    // Simulate the folder picker returning a custom root folder.
+    if let Some(l) = h.state_mut() {
+        l.settings.install_dir = Some("/opt/CraftApps".into());
+    }
+    h.run_steps(3);
+    h.get_by_label("Group installed apps in a 'Craft Suite' subfolder").click();
+    h.run_steps(3);
+    assert!(sent.borrow().contains(&Command::Configure(BackendOptions {
+        kinds: Vec::new(),
+        prereleases: false,
+        install_dir: Some("/opt/CraftApps".into()),
+        suite_subfolder: true,
+        app_install_dirs: std::collections::BTreeMap::new(),
+    })));
+
+    // Reset clears the custom root folder.
+    h.get_by_label("Reset").click();
+    h.run_steps(3);
+    assert_eq!(h.state().as_ref().unwrap().settings.install_dir, None);
+    h.get_by_label("Done").click();
+    h.run_steps(3);
+
+    // 2. Per-app installation folder via the ⋯ menu.
+    h.get_all_by_label("…").next().unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("Installation folder…").click();
+    h.run_steps(4);
+    h.get_by_label("Installation folder for PhotoCraft");
+    h.get_by_label("Browse…").click();
+    h.run_steps(2);
+    assert!(sent.borrow().contains(&Command::PickInstallFolder { app: Some("photocraft".into()) }));
+
+    // Save a custom folder for PhotoCraft.
+    if let Some(l) = h.state_mut() {
+        l.settings.app_install_dirs.insert("photocraft".into(), "/custom/PhotoCraft".into());
+    }
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert_eq!(h.state().as_ref().unwrap().settings.app_install_dirs.get("photocraft").map(String::as_str), Some("/custom/PhotoCraft"));
+
+    // Reopen and reset to default.
+    h.get_all_by_label("…").next().unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("Installation folder…").click();
+    h.run_steps(4);
+    h.get_by_label("Use default").click();
+    h.run_steps(3);
+    assert!(!h.state().as_ref().unwrap().settings.app_install_dirs.contains_key("photocraft"));
+}

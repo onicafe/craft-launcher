@@ -185,7 +185,7 @@ impl NativeBackend {
             let snapshot = crate::detect::Snapshot::take();
             let manifest = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner).clone();
             for app in &SUITE {
-                let found = crate::detect::detect(app, &manifest, &snapshot);
+                let found = crate::detect::detect_with_options(app, &manifest, &snapshot, &options);
                 {
                     let mut map = shared.installed.lock().unwrap_or_else(PoisonError::into_inner);
                     match &found {
@@ -342,7 +342,7 @@ impl NativeBackend {
                 shared.emit(Event::Progress { app: app.id.to_string(), phase: JobPhase::Removing });
                 let mut phase = |phase| shared.emit(Event::Progress { app: app.id.to_string(), phase });
                 match &existing {
-                    Some(inst) => install::uninstall(app, inst, record.as_ref(), &paths, &stop, &mut phase).map(|()| {
+                    Some(inst) => install::uninstall(app, inst, record.as_ref(), &paths, &options, &stop, &mut phase).map(|()| {
                         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
                         if m.apps.remove(app.id).is_some() {
                             let _ = m.save(&paths.manifest());
@@ -364,7 +364,7 @@ impl NativeBackend {
             report_partial(app, &shared, &paths, platform, &options);
             // Look again: the result is whatever is on disk now.
             let manifest = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            let found = crate::detect::detect(app, &manifest, &crate::detect::Snapshot::take());
+            let found = crate::detect::detect_with_options(app, &manifest, &crate::detect::Snapshot::take(), &options);
             // One installer call can cover several apps, and fail after some of them went in.
             let latest = shared.latest.lock().unwrap_or_else(PoisonError::into_inner).get(app.id).cloned();
             let result = match (result, latest) {
@@ -478,7 +478,7 @@ fn run_install(
         last_emit = Instant::now();
         shared.emit(Event::Progress { app: app.id.to_string(), phase: p });
     };
-    let mut job = Job { http, paths, stop, phase: &mut phase };
+    let mut job = Job { http, paths, stop, phase: &mut phase, options };
     let new_record = install::install(app, &release, &asset, kind, existing, record, &mut job)?;
     {
         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
@@ -941,20 +941,34 @@ impl Backend for NativeBackend {
             Command::UpdateLauncher => self.update_launcher(),
             Command::FetchScreenshots { app } => self.fetch_screenshots(&app),
             Command::Configure(options) => {
-                let changed_pre = {
+                let (changed_pre, changed_dirs) = {
                     let mut o = self.shared.options.lock().unwrap_or_else(PoisonError::into_inner);
-                    let changed = o.prereleases != options.prereleases;
+                    let changed_pre = o.prereleases != options.prereleases;
+                    let changed_dirs = o.install_dir != options.install_dir
+                        || o.suite_subfolder != options.suite_subfolder
+                        || o.app_install_dirs != options.app_install_dirs;
                     *o = options;
-                    changed
+                    (changed_pre, changed_dirs)
                 };
                 // Another package format means another file to download.
                 let options = self.options();
                 for app in &SUITE {
                     report_partial(app, &self.shared, &self.paths, self.platform, &options);
                 }
+                if changed_dirs {
+                    self.detect_all();
+                }
                 if changed_pre {
                     self.check(true);
                 }
+            }
+            Command::PickInstallFolder { app } => {
+                let shared = self.shared.clone();
+                std::thread::spawn(move || {
+                    if let Some(path) = pick_folder_dialog() {
+                        shared.emit(Event::InstallFolderPicked { app, path });
+                    }
+                });
             }
         }
     }
@@ -978,6 +992,57 @@ impl Backend for NativeBackend {
 
     fn now(&self) -> i64 {
         crate::now()
+    }
+}
+
+/// Opens the platform's native folder picker and returns the chosen path.
+fn pick_folder_dialog() -> Option<String> {
+    #[cfg(windows)]
+    {
+        let out = crate::process::command("powershell")
+            .args([
+                "-NoProfile",
+                "-STA",
+                "-Command",
+                "Add-Type -AssemblyName System.Windows.Forms; \
+                 $f = New-Object System.Windows.Forms.FolderBrowserDialog; \
+                 $f.ShowNewFolderButton = $true; \
+                 if ($f.ShowDialog() -eq 'OK') { [Console]::Out.Write($f.SelectedPath) }",
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!path.is_empty()).then_some(path)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = crate::process::command("/usr/bin/osascript").args(["-e", "POSIX path of (choose folder)"]).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if raw.is_empty() {
+            return None;
+        }
+        let trimmed = raw.trim_end_matches('/');
+        Some(if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        for (program, args) in [("zenity", &["--file-selection", "--directory"][..]), ("kdialog", &["--getexistingdirectory"][..])] {
+            if let Ok(out) = crate::process::command(program).args(args).output()
+                && out.status.success()
+            {
+                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Some(path);
+                }
+            }
+        }
+        None
     }
 }
 

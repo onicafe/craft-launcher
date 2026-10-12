@@ -339,3 +339,13 @@ filter	Installed	Установлены
 	Loading pictures…	Загрузка изображений…
 	Pictures couldn't be loaded. Reopen this page to try again.	Не удалось загрузить изображения. Откройте страницу снова, чтобы повторить попытку.
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} обновление|ArtCraft Launcher · {n} обновления|ArtCraft Launcher · {n} обновлений
+	Installation location	Папка установки
+	Browse…	Обзор…
+	Reset	Сбросить
+	Used for AppImage installs on Linux.	Используется при установке AppImage в Linux.
+	Group installed apps in a 'Craft Suite' subfolder	Группировать установленные приложения в подпапке «Craft Suite»
+	Installation folder…	Папка установки…
+	Installation folder for {name}	Папка установки для {name}
+	Choose a custom folder for this app, or leave it blank to use the default installation location.	Выберите собственную папку для этого приложения или оставьте поле пустым, чтобы использовать стандартную папку установки.
+	Use default	По умолчанию
+	Save	Сохранить

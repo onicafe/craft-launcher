@@ -346,3 +346,13 @@ filter	Installed	インストール済み
 	ArtCraft on GitHub	GitHub の ArtCraft
 	Join the ArtCraft Discord	ArtCraft Discord に参加
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} 件の更新があります
+	Installation location	インストール先
+	Browse…	参照…
+	Reset	リセット
+	Used for AppImage installs on Linux.	Linux での AppImage のインストールに使用されます。
+	Group installed apps in a 'Craft Suite' subfolder	インストールしたアプリを「Craft Suite」サブフォルダーにまとめる
+	Installation folder…	インストールフォルダー…
+	Installation folder for {name}	{name} のインストールフォルダー
+	Choose a custom folder for this app, or leave it blank to use the default installation location.	このアプリのカスタムフォルダーを選択してください。空白のままにすると、既定のインストール先が使用されます。
+	Use default	既定を使用
+	Save	保存

@@ -114,6 +114,15 @@ pub struct Settings {
     pub last_check: Option<i64>,
     /// Catalog ids of apps hidden from the main lists (`photocraft`, …).
     pub hidden: std::collections::BTreeSet<String>,
+    /// Custom root folder for installing Craft Apps (`None`: platform default).
+    #[serde(default)]
+    pub install_dir: Option<String>,
+    /// Place installed Craft Apps inside a dedicated `Craft Suite` subfolder (#15).
+    #[serde(default)]
+    pub suite_subfolder: bool,
+    /// Per-app installation folder overrides (#93, #157): app id → folder path.
+    #[serde(default)]
+    pub app_install_dirs: BTreeMap<String, String>,
 }
 
 impl Settings {
@@ -132,6 +141,34 @@ impl Settings {
             Some(lang) => lang.name().to_string(),
             None => t("Auto").to_string(),
         }
+    }
+
+    /// Default root installation folder shown as placeholder in Settings.
+    pub fn default_install_dir_hint(platform: Option<artcraft_launcher_core::Platform>) -> &'static str {
+        match platform.map(|p| p.os) {
+            Some(artcraft_launcher_core::Os::Windows) => r"C:\Program Files",
+            Some(artcraft_launcher_core::Os::MacOs) => "/Applications",
+            _ => "~/Applications",
+        }
+    }
+
+    /// Default installation folder for `app` (taking `install_dir` and `suite_subfolder` into
+    /// account), shown as placeholder in the per-app installation folder dialog.
+    pub fn default_app_install_dir(&self, app: &artcraft_launcher_core::CraftApp, platform: Option<artcraft_launcher_core::Platform>) -> String {
+        let root = self.install_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or_else(|| Self::default_install_dir_hint(platform));
+        let sep = if platform.is_some_and(|p| p.os == artcraft_launcher_core::Os::Windows) { '\\' } else { '/' };
+        let trimmed = root.trim_end_matches(['/', '\\']);
+        let base = if self.suite_subfolder {
+            let leaf = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+            if leaf.eq_ignore_ascii_case(artcraft_launcher_core::protocol::SUITE_FOLDER_NAME) {
+                trimmed.to_string()
+            } else {
+                format!("{trimmed}{sep}{}", artcraft_launcher_core::protocol::SUITE_FOLDER_NAME)
+            }
+        } else {
+            trimmed.to_string()
+        };
+        if platform.is_some_and(|p| p.os == artcraft_launcher_core::Os::Windows) { format!("{base}{sep}{}", app.name) } else { base }
     }
 }
 
@@ -186,6 +223,9 @@ impl Default for Settings {
             notified: BTreeMap::new(),
             last_check: None,
             hidden: std::collections::BTreeSet::new(),
+            install_dir: None,
+            suite_subfolder: false,
+            app_install_dirs: BTreeMap::new(),
         }
     }
 }

@@ -836,6 +836,13 @@ impl LauncherUi {
                     self.send(Command::Install { app: id.clone() });
                     ui.close();
                 }
+            }
+            if manage && ui.button(tl!("Installation folder…")).clicked() {
+                let path = self.settings.app_install_dirs.get(&id).cloned().unwrap_or_default();
+                self.dialog = Some(Dialog::InstallLocation { app: id.clone(), path });
+                ui.close();
+            }
+            if manage && status.is_installed() {
                 ui.separator();
                 if ui.button(RichText::new(tl!("Uninstall…")).color(Tokens::get(ui.ctx()).bad)).clicked() {
                     self.dialog = Some(Dialog::ConfirmUninstall(id.clone()));

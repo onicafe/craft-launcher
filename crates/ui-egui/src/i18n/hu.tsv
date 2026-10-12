@@ -344,3 +344,13 @@ filter	Installed	Telepítve
 	ArtCraft on GitHub	ArtCraft a GitHubon
 	Join the ArtCraft Discord	Csatlakozás az ArtCraft Discord-közösségéhez
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} frissítés elérhető|ArtCraft Launcher · {n} frissítés elérhető
+	Installation location	Telepítési hely
+	Browse…	Tallózás…
+	Reset	Visszaállítás
+	Used for AppImage installs on Linux.	Linuxon az AppImage-telepítésekhez használatos.
+	Group installed apps in a 'Craft Suite' subfolder	Telepített alkalmazások csoportosítása egy „Craft Suite” almappába
+	Installation folder…	Telepítési mappa…
+	Installation folder for {name}	{name} telepítési mappája
+	Choose a custom folder for this app, or leave it blank to use the default installation location.	Válassz egyéni mappát ehhez az alkalmazáshoz, vagy hagyd üresen az alapértelmezett telepítési hely használatához.
+	Use default	Alapértelmezett használata
+	Save	Mentés

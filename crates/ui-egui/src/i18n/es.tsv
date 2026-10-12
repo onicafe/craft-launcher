@@ -324,3 +324,13 @@ filter	Installed	Instaladas
 	ArtCraft on GitHub	ArtCraft en GitHub
 	Join the ArtCraft Discord	Únete al Discord de ArtCraft
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} actualización disponible|ArtCraft Launcher · {n} actualizaciones disponibles
+	Installation location	Ubicación de instalación
+	Browse…	Examinar…
+	Reset	Restablecer
+	Used for AppImage installs on Linux.	Se usa para instalaciones AppImage en Linux.
+	Group installed apps in a 'Craft Suite' subfolder	Agrupar las aplicaciones instaladas en una subcarpeta 'Craft Suite'
+	Installation folder…	Carpeta de instalación…
+	Installation folder for {name}	Carpeta de instalación de {name}
+	Choose a custom folder for this app, or leave it blank to use the default installation location.	Elige una carpeta personalizada para esta aplicación o déjala en blanco para usar la ubicación de instalación predeterminada.
+	Use default	Usar predeterminada
+	Save	Guardar

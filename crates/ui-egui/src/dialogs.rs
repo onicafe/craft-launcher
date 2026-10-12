@@ -25,6 +25,7 @@ impl LauncherUi {
         let response = match &dialog {
             Dialog::Notes(id) => modal.show(ctx, |ui| close = self.notes_dialog(ui, id)),
             Dialog::ConfirmUninstall(id) => modal.show(ctx, |ui| close = self.uninstall_dialog(ui, id)),
+            Dialog::InstallLocation { app, .. } => modal.show(ctx, |ui| close = self.install_location_dialog(ui, app)),
             Dialog::Settings => modal.show(ctx, |ui| close = self.settings_dialog(ui, host)),
             Dialog::LauncherUpdate(r) => modal.show(ctx, |ui| close = self.launcher_update_dialog(ui, r)),
         };
@@ -177,6 +178,66 @@ impl LauncherUi {
         close
     }
 
+    fn install_location_dialog(&mut self, ui: &mut egui::Ui, id: &str) -> bool {
+        let Some(entry) = self.entry(id).cloned() else { return true };
+        let t = Tokens::get(ui.ctx());
+        ui.set_width(460.0f32.min(ui.ctx().content_rect().width() - 80.0));
+        Self::title(ui, crate::icons::app(id), &fmt(tl!("Installation folder for {name}"), &[("name", entry.app.name)]), "");
+        ui.label(
+            RichText::new(tl!("Choose a custom folder for this app, or leave it blank to use the default installation location.")).color(t.muted),
+        );
+        ui.add_space(10.0);
+        let hint = self.settings.default_app_install_dir(entry.app, self.platform);
+        let mut draft = match &self.dialog {
+            Some(Dialog::InstallLocation { app, path }) if app == id => path.clone(),
+            _ => String::new(),
+        };
+        ui.horizontal(|ui| {
+            let browse_w = widgets::button_width(ui, tl!("Browse…"), 0.0);
+            let text_w = (ui.available_width() - browse_w - ui.spacing().item_spacing.x).max(120.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut draft)
+                    .hint_text(&hint)
+                    .desired_width(text_w)
+                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .vertical_align(egui::Align::Center)
+                    .margin(vec2(10.0, 0.0)),
+            );
+            if widgets::button(ui, tl!("Browse…"), Kind::Secondary, 0.0).clicked() {
+                self.send(Command::PickInstallFolder { app: Some(id.to_string()) });
+            }
+        });
+        if let Some(Dialog::InstallLocation { app, path }) = &mut self.dialog
+            && app == id
+        {
+            *path = draft.clone();
+        }
+        ui.add_space(18.0);
+        let mut close = false;
+        let has_override = self.settings.app_install_dirs.contains_key(id) || !draft.trim().is_empty();
+        ui.horizontal(|ui| {
+            if has_override && widgets::button(ui, tl!("Use default"), Kind::Secondary, 0.0).clicked() {
+                self.settings.app_install_dirs.remove(id);
+                close = true;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::button(ui, tl!("Save"), Kind::Primary, 90.0).clicked() {
+                    let trimmed = draft.trim();
+                    if trimmed.is_empty() {
+                        self.settings.app_install_dirs.remove(id);
+                    } else {
+                        self.settings.app_install_dirs.insert(id.to_string(), trimmed.to_string());
+                    }
+                    close = true;
+                }
+                if widgets::button(ui, tl!("Cancel"), Kind::Secondary, 90.0).clicked() {
+                    close = true;
+                }
+            });
+        });
+        close
+    }
+
     fn settings_dialog(&mut self, ui: &mut egui::Ui, host: &mut dyn Host) -> bool {
         // Leave room for the frame (48 px) and a 16 px gutter on each side.
         let viewport = ui.ctx().content_rect();
@@ -319,6 +380,35 @@ impl LauncherUi {
         }
 
         if self.caps.manage_apps {
+            section(ui, tl!("Installation location"));
+            let hint = Settings::default_install_dir_hint(self.platform);
+            let mut dir = self.settings.install_dir.clone().unwrap_or_default();
+            let has_custom = !dir.trim().is_empty();
+            ui.horizontal(|ui| {
+                let browse_w = widgets::button_width(ui, tl!("Browse…"), 0.0);
+                let reset_w = if has_custom { widgets::button_width(ui, tl!("Reset"), 0.0) + ui.spacing().item_spacing.x } else { 0.0 };
+                let text_w = (ui.available_width() - browse_w - reset_w - ui.spacing().item_spacing.x).max(120.0);
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut dir)
+                        .hint_text(hint)
+                        .desired_width(text_w)
+                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .vertical_align(egui::Align::Center)
+                        .margin(vec2(10.0, 0.0)),
+                );
+                if self.platform.is_some_and(|p| p.os == Os::Linux) {
+                    edit.on_hover_text(tl!("Used for AppImage installs on Linux."));
+                }
+                if widgets::button(ui, tl!("Browse…"), Kind::Secondary, 0.0).clicked() {
+                    self.send(Command::PickInstallFolder { app: None });
+                }
+                if has_custom && widgets::button(ui, tl!("Reset"), Kind::Secondary, 0.0).clicked() {
+                    dir.clear();
+                }
+            });
+            self.settings.install_dir = (!dir.is_empty()).then_some(dir);
+            ui.checkbox(&mut self.settings.suite_subfolder, tl!("Group installed apps in a 'Craft Suite' subfolder"));
+
             section(ui, tl!("Running in the background"));
             if host.has_tray() {
                 ui.checkbox(&mut self.settings.close_to_tray, tl!("Keep running in the tray when the window is closed"));

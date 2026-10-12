@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 
-use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, JobPhase};
+use artcraft_launcher_core::protocol::{BackendOptions, CANCELLED, INSTALL_CANCELLED, JobPhase};
 use artcraft_launcher_core::release::{self, Asset, Release};
 use artcraft_launcher_core::{CraftApp, InstallSource, Installed, PackageKind};
 
@@ -36,6 +36,7 @@ pub struct Job<'a> {
     pub paths: &'a Paths,
     pub stop: &'a Stop,
     pub phase: &'a mut dyn FnMut(JobPhase),
+    pub options: &'a BackendOptions,
 }
 
 /// Downloads and installs `asset` of `release`. Returns a record when the launcher owns the
@@ -66,13 +67,20 @@ pub fn install(
     let version = release.version_label();
     let result = match kind {
         #[cfg(target_os = "macos")]
-        PackageKind::Dmg => macos::install_dmg(app, &file, existing, job.paths, &macos::Expect::release(release)).map(|_| None),
+        PackageKind::Dmg => {
+            macos::install_dmg_with_options(app, &file, existing, job.paths, &macos::Expect::release(release), job.options).map(|_| None)
+        }
         #[cfg(windows)]
-        PackageKind::Msi => windows::run_msi(&file, job.stop, &mut *job.phase).map(|_| None),
+        PackageKind::Msi => {
+            let default_pf = PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into()));
+            let custom_dir =
+                job.options.has_custom_location(app.id).then(|| crate::detect::windows_install_dir(app, job.options, &default_pf)).flatten();
+            windows::run_msi(&file, custom_dir.as_deref(), job.stop, &mut *job.phase).map(|_| None)
+        }
         #[cfg(target_os = "linux")]
         PackageKind::Deb | PackageKind::Rpm | PackageKind::Flatpak => linux::install_package(kind, &file, job.stop, &mut *job.phase).map(|_| None),
         #[cfg(target_os = "linux")]
-        PackageKind::AppImage => linux::install_appimage(app, &file, &asset.name, existing).map(|(path, replaced)| {
+        PackageKind::AppImage => linux::install_appimage(app, &file, &asset.name, existing, job.options).map(|(path, replaced)| {
             let files = linux::integrate(app, &path, &replaced, previous);
             Some(record(&version, kind, path, files, false))
         }),
@@ -216,10 +224,11 @@ pub fn uninstall(
     installed: &Installed,
     record: Option<&Record>,
     paths: &Paths,
+    options: &BackendOptions,
     stop: &Stop,
     phase: &mut dyn FnMut(JobPhase),
 ) -> Result<(), String> {
-    let _ = (record, stop, &phase, paths);
+    let _ = (record, stop, &phase, paths, options);
     let path = PathBuf::from(&installed.location);
     if let Some(msg) = managed_elsewhere(app, installed, true) {
         return Err(msg);
@@ -231,7 +240,7 @@ pub fn uninstall(
     }
     match installed.source {
         #[cfg(windows)]
-        InstallSource::Msi => windows::uninstall_msi(app, stop, phase),
+        InstallSource::Msi => windows::uninstall_msi(app, options, stop, phase),
         #[cfg(target_os = "macos")]
         InstallSource::MacApp | InstallSource::Launcher => macos::move_to_trash(&path),
         #[cfg(target_os = "linux")]
@@ -244,13 +253,13 @@ pub fn uninstall(
             None => Err("the launcher has no record of these files".into()),
         },
         #[cfg(target_os = "linux")]
-        InstallSource::AppImage => remove_appimage(app, &path, record),
+        InstallSource::AppImage => remove_appimage(app, &path, record, options),
         // A tarball the launcher unpacked into its own folder: take the tree out and leave the
         // app's settings (`home/`) alone, so a reinstall finds its projects where they were.
         #[cfg(target_os = "linux")]
         InstallSource::Launcher if record.is_some_and(|r| r.kind == PackageKind::TarGz) => linux::remove_tree(app, paths),
         #[cfg(target_os = "linux")]
-        InstallSource::Launcher => remove_appimage(app, &path, record),
+        InstallSource::Launcher => remove_appimage(app, &path, record, options),
         other => Err(format!("{} can't be removed from here", other.label())),
     }
 }
@@ -258,14 +267,14 @@ pub fn uninstall(
 /// Deletes an AppImage, the menu entry and icon the launcher wrote for it, and the menu entry
 /// the app may have written for itself on first run.
 #[cfg(target_os = "linux")]
-fn remove_appimage(app: &CraftApp, path: &Path, record: Option<&Record>) -> Result<(), String> {
+fn remove_appimage(app: &CraftApp, path: &Path, record: Option<&Record>, options: &BackendOptions) -> Result<(), String> {
     if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("AppImage")) || !path.is_file() {
         return Err(format!("{} isn't an AppImage, so it was left alone", path.display()));
     }
     // AppImages found elsewhere (Gear Lever's ~/AppImages, ~/.local/bin) are the user's own:
     // remove only the launcher's folder or a copy the launcher recorded installing.
     let ours =
-        path.parent().is_some_and(|dir| crate::detect::linux::appimage_dir().is_some_and(|own| own == dir)) || record.is_some_and(|r| r.path == path);
+        path.parent().is_some_and(|dir| crate::detect::linux::is_managed_appimage_dir(app, dir, options)) || record.is_some_and(|r| r.path == path);
     if !ours {
         return Err(format!("{} wasn't installed by the launcher. Remove it the way it was added.", path.display()));
     }
@@ -647,12 +656,19 @@ pub(crate) mod linux {
         }
     }
 
-    /// Copies an AppImage into `~/Applications` and makes it executable; removes the copy it
-    /// replaces when that one is the launcher's (in `~/Applications`). AppImages the user keeps
-    /// elsewhere (Gear Lever's `~/AppImages`, `~/.local/bin`) are left alone. Returns the new
-    /// path and the old copies removed.
-    pub fn install_appimage(app: &CraftApp, file: &Path, name: &str, existing: Option<&Installed>) -> Result<(PathBuf, Vec<PathBuf>), String> {
-        let dir = crate::detect::linux::appimage_dir().ok_or("no home folder")?;
+    /// Copies an AppImage into `~/Applications` (or the configured custom folder) and makes it
+    /// executable; removes the copy it replaces when that one is the launcher's. AppImages the
+    /// user keeps elsewhere (Gear Lever's `~/AppImages`, `~/.local/bin`) are left alone. Returns
+    /// the new path and the old copies removed.
+    pub fn install_appimage(
+        app: &CraftApp,
+        file: &Path,
+        name: &str,
+        existing: Option<&Installed>,
+        options: &BackendOptions,
+    ) -> Result<(PathBuf, Vec<PathBuf>), String> {
+        let default_dir = crate::detect::linux::appimage_dir();
+        let dir = crate::detect::appimage_install_dir(app, options, default_dir.as_deref()).ok_or("no home folder")?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
         let dest = dir.join(name);
         let partial = dir.join(format!(".{name}.partial"));
@@ -661,7 +677,7 @@ pub(crate) mod linux {
         std::fs::rename(&partial, &dest).map_err(|e| format!("couldn't put the AppImage in place ({e})"))?;
         // Older AppImages of this app in the launcher's folder (the one we replaced, or earlier
         // downloads) go, and the copy the launcher's record pointed at.
-        let mut old = crate::detect::linux::launcher_appimages(app);
+        let mut old = crate::detect::linux::launcher_appimages_for(app, options);
         if let Some(inst) = existing.filter(|i| i.source == InstallSource::Launcher) {
             old.push(PathBuf::from(&inst.location));
         }
@@ -847,14 +863,19 @@ pub mod macos {
 
     use super::*;
 
-    /// `/Applications` when we can write there, else `~/Applications`.
-    fn applications_dir(existing: Option<&Installed>) -> Result<PathBuf, String> {
+    /// The configured custom folder, else `/Applications` when we can write there, else `~/Applications`.
+    fn applications_dir(app: &CraftApp, existing: Option<&Installed>, options: &BackendOptions) -> Result<PathBuf, String> {
+        let system = PathBuf::from("/Applications");
+        if options.has_custom_location(app.id) {
+            let dir = crate::detect::macos_install_dir(app, options, &system);
+            std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
+            return Ok(dir);
+        }
         if let Some(parent) =
             existing.filter(|i| i.source == InstallSource::MacApp).and_then(|i| Path::new(&i.location).parent().map(Path::to_path_buf))
         {
             return Ok(parent);
         }
-        let system = PathBuf::from("/Applications");
         let probe = system.join(".artcraft-launcher-write-test");
         if std::fs::write(&probe, b"").is_ok() {
             let _ = std::fs::remove_file(&probe);
@@ -896,6 +917,17 @@ pub mod macos {
     const CODESIGN: &str = "/usr/bin/codesign";
 
     pub fn install_dmg(app: &CraftApp, dmg: &Path, existing: Option<&Installed>, paths: &Paths, expect: &Expect<'_>) -> Result<PathBuf, String> {
+        install_dmg_with_options(app, dmg, existing, paths, expect, &BackendOptions::default())
+    }
+
+    pub fn install_dmg_with_options(
+        app: &CraftApp,
+        dmg: &Path,
+        existing: Option<&Installed>,
+        paths: &Paths,
+        expect: &Expect<'_>,
+        options: &BackendOptions,
+    ) -> Result<PathBuf, String> {
         // A new, empty mount point for every install. A fixed one can still hold an image from an
         // attach that was interrupted or timed out, and hdiutil won't mount another over it.
         let attempt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
@@ -934,17 +966,23 @@ pub mod macos {
             let _ = std::fs::remove_dir(&mount);
             return Err(format!("couldn't open the disk image: {reason}"));
         }
-        let result = copy_app(app, &mount, existing, expect);
+        let result = copy_app(app, &mount, existing, expect, options);
         let _ = detach(&mount);
         let _ = std::fs::remove_dir(&mount);
         result
     }
 
-    fn copy_app(app: &CraftApp, mount: &Path, existing: Option<&Installed>, expect: &Expect<'_>) -> Result<PathBuf, String> {
+    fn copy_app(
+        app: &CraftApp,
+        mount: &Path,
+        existing: Option<&Installed>,
+        expect: &Expect<'_>,
+        options: &BackendOptions,
+    ) -> Result<PathBuf, String> {
         let bundle = format!("{}.app", app.name);
         let src = mount.join(&bundle);
         crate::detect::macos::read_bundle(app, &src).ok_or("the disk image doesn't contain the app")?;
-        let dir = applications_dir(existing)?;
+        let dir = applications_dir(app, existing, options)?;
         let dest = dir.join(&bundle);
         let staged = dir.join(format!(".{bundle}.partial"));
         let _ = std::fs::remove_dir_all(&staged);
@@ -1176,14 +1214,18 @@ pub mod windows {
     }
 
     /// Runs an MSI with a progress window and no restart. Windows asks for permission itself.
-    pub fn run_msi(msi: &Path, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
+    pub fn run_msi(msi: &Path, install_dir: Option<&Path>, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
         in_turn(stop, phase, JobPhase::Installing, || {
-            let status = process::command(msiexec())
-                .arg("/i")
-                .arg(msi)
-                .args(["/passive", "/norestart"])
-                .status()
-                .map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
+            let mut cmd = process::command(msiexec());
+            cmd.arg("/i").arg(msi).args(["/passive", "/norestart"]);
+            if let Some(dir) = install_dir {
+                let path = dir.display();
+                cmd.arg(format!("INSTALLFOLDER={path}"))
+                    .arg(format!("INSTALLDIR={path}"))
+                    .arg(format!("APPLICATIONFOLDER={path}"))
+                    .arg(format!("ARPINSTALLLOCATION={path}"));
+            }
+            let status = cmd.status().map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
             explain(status.code())
         })
     }
@@ -1194,8 +1236,8 @@ pub mod windows {
         INSTALLER.alone(&cancelled(stop), &mut turn(phase, working), work).unwrap_or_else(|| Err(CANCELLED.into()))
     }
 
-    pub fn uninstall_msi(app: &CraftApp, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
-        let installs = crate::detect::windows::msi_installs(app);
+    pub fn uninstall_msi(app: &CraftApp, options: &BackendOptions, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
+        let installs = crate::detect::windows::msi_installs_with_options(app, options);
         if installs.is_empty() {
             return Err(format!("{} isn't registered with the Windows Installer", app.name));
         }
@@ -1247,9 +1289,10 @@ mod tests {
         // A format no build of the launcher installs here stands in for any failing install step.
         let kind = if cfg!(windows) { PackageKind::Dmg } else { PackageKind::Msi };
         let mut phases = Vec::new();
+        let options = BackendOptions::default();
         for _ in 0..2 {
             let mut phase = |p: JobPhase| phases.push(p);
-            let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase };
+            let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase, options: &options };
             let err = install(app, &release, &asset, kind, None, None, &mut job).unwrap_err();
             assert!(err.contains("isn't supported"), "{err}");
             assert_eq!(std::fs::read(download_path(&paths, &asset)).unwrap(), body);
@@ -1273,7 +1316,8 @@ mod tests {
         let kind = if cfg!(windows) { PackageKind::Dmg } else { PackageKind::Msi };
         let mut phases = Vec::new();
         let mut phase = |p: JobPhase| phases.push(p);
-        let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase };
+        let options = BackendOptions::default();
+        let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase, options: &options };
         let err = install(app, &release, &asset, kind, None, None, &mut job).unwrap_err();
         assert!(err.contains("publishes no checksum"), "{err}");
         assert!(!download_path(&paths, &asset).exists());

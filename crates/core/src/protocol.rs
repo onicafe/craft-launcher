@@ -51,15 +51,46 @@ pub enum Command {
     },
     /// Change how the backend behaves.
     Configure(BackendOptions),
+    /// Open a native folder picker for the global install folder (`None`) or a specific app's (`Some(id)`).
+    PickInstallFolder {
+        app: Option<String>,
+    },
 }
+
+/// Subfolder name used when [`BackendOptions::suite_subfolder`] is enabled.
+pub const SUITE_FOLDER_NAME: &str = "Craft Suite";
 
 /// Settings the backend needs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BackendOptions {
     /// Package formats to install, best first (empty: the platform default).
     pub kinds: Vec<PackageKind>,
     /// Offer pre-releases (`0.6.0-rc.1`) as updates.
     pub prereleases: bool,
+    /// Custom root folder for installed apps (`None`: the platform default).
+    pub install_dir: Option<String>,
+    /// Put installed apps inside a `Craft Suite` subfolder of the install root.
+    pub suite_subfolder: bool,
+    /// Per-app custom installation folder overrides (`app_id -> path`).
+    pub app_install_dirs: std::collections::BTreeMap<String, String>,
+}
+
+impl BackendOptions {
+    /// Cleaned per-app custom folder for `app_id`, if one is set.
+    pub fn custom_app_dir(&self, app_id: &str) -> Option<&str> {
+        self.app_install_dirs.get(app_id).map(String::as_str).map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// Cleaned global custom root folder, if one is set.
+    pub fn custom_root_dir(&self) -> Option<&str> {
+        self.install_dir.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// Whether any custom installation location or `Craft Suite` subfolder is configured for `app_id`.
+    pub fn has_custom_location(&self, app_id: &str) -> bool {
+        self.custom_app_dir(app_id).is_some() || self.custom_root_dir().is_some() || self.suite_subfolder
+    }
 }
 
 /// The answer to "what's the latest release of this app?".
@@ -207,6 +238,11 @@ pub enum Event {
         source: Source,
         /// GitHub refused more API calls until this time (Unix seconds).
         rate_limited_until: Option<i64>,
+    },
+    /// The user picked a custom installation folder (`app: None` for the global root, `Some(id)` for one app).
+    InstallFolderPicked {
+        app: Option<String>,
+        path: String,
     },
 }
 

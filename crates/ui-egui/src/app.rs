@@ -72,6 +72,7 @@ pub(crate) struct Toast {
 pub(crate) enum Dialog {
     Notes(String),
     ConfirmUninstall(String),
+    InstallLocation { app: String, path: String },
     Settings,
     LauncherUpdate(artcraft_launcher_core::Release),
 }
@@ -83,6 +84,7 @@ impl Dialog {
         match self {
             Dialog::Notes(id) => ("notes", id),
             Dialog::ConfirmUninstall(id) => ("uninstall", id),
+            Dialog::InstallLocation { app, .. } => ("install-location", app),
             Dialog::Settings => ("settings", ""),
             Dialog::LauncherUpdate(r) => ("launcher-update", &r.tag),
         }
@@ -266,7 +268,13 @@ impl LauncherUi {
     /// Non-drawing work: runs every frame and also while the window is hidden in the tray.
     pub fn logic(&mut self, ctx: &egui::Context, host: &mut dyn Host) {
         set_current(crate::i18n::Lang::from_pref(&self.settings.language));
-        let options = BackendOptions { kinds: self.settings.preferred_kinds.clone(), prereleases: self.settings.prereleases };
+        let options = BackendOptions {
+            kinds: self.settings.preferred_kinds.clone(),
+            prereleases: self.settings.prereleases,
+            install_dir: self.settings.install_dir.clone().filter(|s| !s.trim().is_empty()),
+            suite_subfolder: self.settings.suite_subfolder,
+            app_install_dirs: self.settings.app_install_dirs.clone(),
+        };
         if self.sent_options.as_ref() != Some(&options) {
             self.backend.send(Command::Configure(options.clone()));
             self.sent_options = Some(options);
@@ -414,6 +422,26 @@ impl LauncherUi {
                 self.settings.last_check = Some(at);
                 self.last_source = Some(source);
                 self.rate_limited_until = rate_limited_until;
+                true
+            }
+            Event::InstallFolderPicked { app, path } => {
+                let clean = path.trim().to_string();
+                if !clean.is_empty() {
+                    match app {
+                        Some(id) => {
+                            if let Some(Dialog::InstallLocation { app: open_id, path: draft }) = &mut self.dialog
+                                && *open_id == id
+                            {
+                                *draft = clean;
+                            } else {
+                                self.settings.app_install_dirs.insert(id, clean);
+                            }
+                        }
+                        None => {
+                            self.settings.install_dir = Some(clean);
+                        }
+                    }
+                }
                 true
             }
         }

@@ -168,7 +168,8 @@ pub fn update(
     let (asset, _) = pick_asset(release, &[LAUNCHER.id], platform, &[install.kind()])
         .ok_or_else(|| format!("ArtCraft Launcher {} has no {} for {}", release.version_label(), install.kind().label(), platform.label()))?;
     let asset = asset.clone();
-    let mut job = Job { http, paths, stop, phase };
+    let options = artcraft_launcher_core::protocol::BackendOptions::default();
+    let mut job = Job { http, paths, stop, phase, options: &options };
     let file = install::download(release, &asset, &mut job)?;
     // The restart ends this process: nothing else may be under way.
     last()?;
