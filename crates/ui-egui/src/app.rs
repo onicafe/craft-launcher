@@ -72,6 +72,7 @@ pub(crate) struct Toast {
 pub(crate) enum Dialog {
     Notes(String),
     ConfirmUninstall(String),
+    AppOptions(String),
     Settings,
     LauncherUpdate(artcraft_launcher_core::Release),
 }
@@ -83,6 +84,7 @@ impl Dialog {
         match self {
             Dialog::Notes(id) => ("notes", id),
             Dialog::ConfirmUninstall(id) => ("uninstall", id),
+            Dialog::AppOptions(id) => ("app-options", id),
             Dialog::Settings => ("settings", ""),
             Dialog::LauncherUpdate(r) => ("launcher-update", &r.tag),
         }
@@ -266,7 +268,11 @@ impl LauncherUi {
     /// Non-drawing work: runs every frame and also while the window is hidden in the tray.
     pub fn logic(&mut self, ctx: &egui::Context, host: &mut dyn Host) {
         set_current(crate::i18n::Lang::from_pref(&self.settings.language));
-        let options = BackendOptions { kinds: self.settings.preferred_kinds.clone(), prereleases: self.settings.prereleases };
+        let options = BackendOptions {
+            kinds: self.settings.preferred_kinds.clone(),
+            prereleases: self.settings.prereleases,
+            app_languages: self.settings.app_languages.clone(),
+        };
         if self.sent_options.as_ref() != Some(&options) {
             self.backend.send(Command::Configure(options.clone()));
             self.sent_options = Some(options);
@@ -335,6 +341,16 @@ impl LauncherUi {
                     e.detected = true;
                 }
                 true
+            }
+            Event::AppLanguages(langs) => {
+                for (app, lang) in langs {
+                    if lang == Settings::LANGUAGE_AUTO || lang.is_empty() {
+                        self.settings.app_languages.remove(&app);
+                    } else {
+                        self.settings.app_languages.insert(app, lang);
+                    }
+                }
+                false
             }
             Event::Progress { app, phase } => {
                 if app == artcraft_launcher_core::catalog::LAUNCHER_ID {

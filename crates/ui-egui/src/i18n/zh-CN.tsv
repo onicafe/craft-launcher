@@ -311,3 +311,7 @@ soundcraft	Recording, editing and mixing audio	音频录制、编辑与混音
 @msg	{name} installed: {version} (this release publishes no checksum, so only its size was checked)	{name} 已安装：{version}（此版本未发布校验和，因此只检查了文件大小）
 @msg	{name} was removed	{name} 已卸载
 @msg	{name} is running. Quit it, then try again.	{name} 正在运行。请先退出，然后重试。
+@msg	Couldn't save language for {name}: {e}	无法保存 {name} 的语言设置：{e}
+	Options…	选项…
+	Options	选项
+	Choose the interface language for this app. If the app is open, it updates immediately.	选择此应用的界面语言。如果应用已打开，语言将立即更新。
