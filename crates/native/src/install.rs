@@ -75,6 +75,10 @@ pub fn install(
             let default_pf = PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into()));
             let custom_dir =
                 job.options.has_custom_location(app.id).then(|| crate::detect::windows_install_dir(app, job.options, &default_pf)).flatten();
+            if let Some(dir) = &custom_dir {
+                let base = crate::detect::custom_base_dir(app, job.options);
+                crate::detect::prepare_custom_dir(base.as_deref(), dir)?;
+            }
             windows::run_msi(&file, custom_dir.as_deref(), job.stop, &mut *job.phase).map(|_| None)
         }
         #[cfg(target_os = "linux")]
@@ -669,7 +673,12 @@ pub(crate) mod linux {
     ) -> Result<(PathBuf, Vec<PathBuf>), String> {
         let default_dir = crate::detect::linux::appimage_dir();
         let dir = crate::detect::appimage_install_dir(app, options, default_dir.as_deref()).ok_or("no home folder")?;
-        std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
+        if options.has_custom_location(app.id) {
+            let base = crate::detect::custom_base_dir(app, options);
+            crate::detect::prepare_custom_dir(base.as_deref(), &dir)?;
+        } else {
+            std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
+        }
         let dest = dir.join(name);
         let partial = dir.join(format!(".{name}.partial"));
         std::fs::copy(file, &partial).map_err(|e| format!("couldn't copy the AppImage ({e})"))?;
@@ -868,7 +877,8 @@ pub mod macos {
         let system = PathBuf::from("/Applications");
         if options.has_custom_location(app.id) {
             let dir = crate::detect::macos_install_dir(app, options, &system);
-            std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
+            let base = crate::detect::custom_base_dir(app, options);
+            crate::detect::prepare_custom_dir(base.as_deref(), &dir)?;
             return Ok(dir);
         }
         if let Some(parent) =
@@ -1192,6 +1202,17 @@ mod freebsd {
     }
 }
 
+/// Formats an `msiexec` public property assignment (`PROPERTY="value"`).
+/// `msiexec` parses its own command line (backslashes do not escape quotes; `""` escapes `"`),
+/// so a drive root like `E:\` must stay `INSTALLFOLDER="E:\"`, not `"E:\\"`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn msi_property_arg(prop: &str, dir: &Path) -> String {
+    let normalized = dir.to_string_lossy().replace('/', "\\");
+    let clean = normalized.trim_end_matches('\\');
+    let value = if clean.ends_with(':') { format!("{clean}\\") } else { clean.replace('"', "\"\"") };
+    format!("{prop}=\"{value}\"")
+}
+
 #[cfg(windows)]
 pub mod windows {
     use artcraft_launcher_core::protocol::CANCELLED;
@@ -1220,12 +1241,8 @@ pub mod windows {
             cmd.arg("/i").arg(msi).args(["/passive", "/norestart"]);
             if let Some(dir) = install_dir {
                 use std::os::windows::process::CommandExt;
-                let _ = std::fs::create_dir_all(dir);
-                let normalized = dir.to_string_lossy().replace('/', "\\");
-                let clean = normalized.trim_end_matches('\\');
-                let value = if clean.ends_with(':') { format!("{clean}\\\\") } else { clean.replace('"', "\"\"") };
-                for prop in ["INSTALLFOLDER", "INSTALLDIR", "APPLICATIONFOLDER", "ARPINSTALLLOCATION"] {
-                    cmd.raw_arg(format!("{prop}=\"{value}\""));
+                for prop in ["INSTALLFOLDER", "INSTALLDIR", "APPLICATIONFOLDER"] {
+                    cmd.raw_arg(msi_property_arg(prop, dir));
                 }
             }
             let status = cmd.status().map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
@@ -1242,6 +1259,18 @@ pub mod windows {
     pub fn uninstall_msi(app: &CraftApp, options: &BackendOptions, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
         let installs = crate::detect::windows::msi_installs_with_options(app, options);
         if installs.is_empty() {
+            if let Some(custom) = crate::detect::windows::detect_in_custom_dirs(app, options) {
+                phase(JobPhase::Removing);
+                let exe = PathBuf::from(&custom.location);
+                if let Some(parent) = exe.parent()
+                    && app.names().chain(app.stems()).any(|n| parent.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.eq_ignore_ascii_case(n)))
+                {
+                    std::fs::remove_dir_all(parent).map_err(|e| format!("couldn't remove {} ({e})", parent.display()))?;
+                } else {
+                    std::fs::remove_file(&exe).map_err(|e| format!("couldn't remove {} ({e})", exe.display()))?;
+                }
+                return Ok(());
+            }
             return Err(format!("{} isn't registered with the Windows Installer", app.name));
         }
         in_turn(stop, phase, JobPhase::Removing, || {
@@ -1613,6 +1642,13 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(choose_kinds(Some(&inst(InstallSource::AppImage)), None, &[]), [PackageKind::AppImage]);
         let _ = inst;
+    }
+
+    #[test]
+    fn msi_property_arg_formats_drive_roots_and_spaces_for_msiexec() {
+        assert_eq!(msi_property_arg("INSTALLFOLDER", Path::new(r"E:\")), r#"INSTALLFOLDER="E:\""#);
+        assert_eq!(msi_property_arg("INSTALLFOLDER", Path::new("E:")), r#"INSTALLFOLDER="E:\""#);
+        assert_eq!(msi_property_arg("INSTALLFOLDER", Path::new(r"D:\Craft Suite\PhotoCraft\")), r#"INSTALLFOLDER="D:\Craft Suite\PhotoCraft""#);
     }
 
     #[cfg(target_os = "linux")]

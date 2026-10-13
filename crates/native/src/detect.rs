@@ -101,6 +101,50 @@ pub fn macos_install_dir(app: &CraftApp, options: &BackendOptions, default_dir: 
     base
 }
 
+/// The user-configured custom base folder for `app` (per-app override or global root), if any.
+pub fn custom_base_dir(app: &CraftApp, options: &BackendOptions) -> Option<PathBuf> {
+    options.custom_app_dir(app.id).or_else(|| options.custom_root_dir()).map(expand_path)
+}
+
+/// Prepares `dir` for an install without ever creating an unmounted volume root or missing parent
+/// directory (for example `/Volumes/Extreme/Apps` when `/Volumes/Extreme` is unplugged).
+pub fn prepare_custom_dir(base: Option<&Path>, dir: &Path) -> Result<(), String> {
+    let check_base = base.unwrap_or(dir);
+    // On macOS, `/Volumes/<Volume>` must already be mounted; never create a folder directly inside `/Volumes`.
+    let mut comps = check_base.components();
+    if matches!(comps.next(), Some(std::path::Component::RootDir))
+        && comps.next().is_some_and(|c| c.as_os_str() == "Volumes")
+        && let Some(vol) = comps.next()
+    {
+        let volume_root = Path::new("/Volumes").join(vol.as_os_str());
+        if !volume_root.is_dir() {
+            return Err(format!("{} isn't available ({} isn't mounted)", dir.display(), volume_root.display()));
+        }
+    }
+    if !check_base.is_dir() {
+        let parent = check_base
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or_else(|| format!("{} isn't available (is the drive plugged in?)", check_base.display()))?;
+        if !parent.is_dir() {
+            return Err(format!("{} isn't available (parent folder {} is missing)", check_base.display(), parent.display()));
+        }
+        std::fs::create_dir(check_base).map_err(|e| format!("couldn't create {} ({e})", check_base.display()))?;
+    }
+    if dir != check_base
+        && let Ok(rel) = dir.strip_prefix(check_base)
+    {
+        let mut cur = check_base.to_path_buf();
+        for part in rel.components() {
+            cur.push(part.as_os_str());
+            if !cur.is_dir() {
+                std::fs::create_dir(&cur).map_err(|e| format!("couldn't create {} ({e})", cur.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What's installed of `app`, best source first.
 pub fn detect(app: &CraftApp, manifest: &Manifest, snapshot: &Snapshot) -> Option<Installed> {
     detect_with_options(app, manifest, snapshot, &BackendOptions::default())
@@ -397,13 +441,27 @@ pub mod windows {
     }
 
     pub fn detect_with_options(app: &CraftApp, options: &BackendOptions) -> Option<Installed> {
-        let m = msi_installs_with_options(app, options).into_iter().next()?;
-        Some(Installed {
-            version: m.version,
-            source: InstallSource::Msi,
-            location: m.exe.map_or_else(|| app.name.to_string(), |p| p.display().to_string()),
-            package: Some(m.product_code),
-        })
+        if let Some(m) = msi_installs_with_options(app, options).into_iter().next() {
+            return Some(Installed {
+                version: m.version,
+                source: InstallSource::Msi,
+                location: m.exe.map_or_else(|| app.name.to_string(), |p| p.display().to_string()),
+                package: Some(m.product_code),
+            });
+        }
+        detect_in_custom_dirs(app, options)
+    }
+
+    /// Detects an app copy in a configured custom folder (such as a portable/external USB drive)
+    /// when this machine's Windows Installer registry has no entry for it.
+    pub fn detect_in_custom_dirs(app: &CraftApp, options: &BackendOptions) -> Option<Installed> {
+        let exe = custom_exe_candidates(app, options, &[]).into_iter().find(|p| p.is_file())?;
+        Some(Installed { version: binary_version(&exe, app), source: InstallSource::Msi, location: exe.display().to_string(), package: None })
+    }
+
+    pub(crate) fn binary_version(bin: &Path, app: &CraftApp) -> Option<version::Version> {
+        let out = crate::process::capture(bin.to_str()?, &["--version"], std::time::Duration::from_secs(5))?;
+        parse_cli_version(out.trim(), app)
     }
 }
 
@@ -873,5 +931,40 @@ mod tests {
         assert_eq!(appimage_install_dir(photo, &opts, Some(apps_dir)), Some(PathBuf::from(r"E:\Special\PhotoCraft")));
         // Other apps still use the global root.
         assert_eq!(appimage_install_dir(word, &opts, Some(apps_dir)), Some(PathBuf::from("/home/user/.local/opt")));
+    }
+
+    #[test]
+    fn prepare_custom_dir_rejects_unplugged_volume_or_missing_parent_and_creates_when_parent_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing_volume = tmp.path().join("unplugged_drive").join("Apps");
+        assert!(prepare_custom_dir(Some(&missing_volume), &missing_volume).is_err(), "must refuse to create when parent folder is missing");
+        assert!(!tmp.path().join("unplugged_drive").exists());
+
+        let unmounted_macos = Path::new("/Volumes/__artcraft_nonexistent_volume__/Apps");
+        assert!(prepare_custom_dir(Some(unmounted_macos), unmounted_macos).is_err());
+
+        let mounted = tmp.path().join("mounted_drive");
+        std::fs::create_dir(&mounted).unwrap();
+        let base = mounted.join("Apps");
+        let target = base.join("Craft Suite").join("PhotoCraft");
+        prepare_custom_dir(Some(&base), &target).unwrap();
+        assert!(target.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detect_in_custom_dirs_finds_usb_or_custom_folder_app_without_msi_registry_entry() {
+        let word = CraftApp::by_id("wordcraft").unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("Craft Suite").join("WordCraft");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let exe = app_dir.join("wordcraft.exe");
+        std::fs::write(&exe, b"").unwrap();
+
+        let opts = BackendOptions { install_dir: Some(tmp.path().display().to_string()), suite_subfolder: true, ..BackendOptions::default() };
+        let found = windows::detect_in_custom_dirs(word, &opts).expect("expected custom folder install to be detected");
+        assert_eq!(found.source, InstallSource::Msi);
+        assert_eq!(found.location, exe.display().to_string());
+        assert_eq!(found.package, None);
     }
 }
