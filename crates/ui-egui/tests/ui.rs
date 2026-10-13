@@ -1496,3 +1496,57 @@ fn with_animations_on_hovering_a_card_animates() {
     let frames = frames_to_hover_the_next_card(&mut h);
     assert!(frames >= 10, "{frames} frames");
 }
+
+#[test]
+fn windows_settings_offers_installer_and_portable_package_formats() {
+    use artcraft_launcher_core::PackageKind;
+
+    struct WinBackend(Fake);
+    impl Backend for WinBackend {
+        fn send(&mut self, c: Command) {
+            self.0.send(c);
+        }
+        fn poll(&mut self) -> Vec<Event> {
+            self.0.poll()
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.0.capabilities()
+        }
+        fn platform(&self) -> Option<Platform> {
+            Some(Platform { os: Os::Windows, arch: Arch::X64 })
+        }
+        fn now(&self) -> i64 {
+            self.0.now()
+        }
+    }
+
+    artcraft_launcher_ui_egui::i18n::set_test_lang(artcraft_launcher_ui_egui::i18n::Lang::EN);
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let mut backend =
+        Some(WinBackend(Fake { events: events(), sent, manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) }));
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { notify: false, ..Settings::default() }));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut NoHost);
+                l.ui(ui, &mut NoHost);
+            }
+        },
+        None,
+    );
+    h.run_steps(6);
+    h.get_by_label("Settings").click();
+    h.run_steps(4);
+    h.get_by_label("Installing on Windows");
+    h.get_by_label("Install new apps as");
+    h.get_by_value("Installer (.msi)").click();
+    h.run_steps(2);
+    h.get_by_label("Portable (.zip)").click();
+    h.run_steps(3);
+    h.get_by_value("Portable (.zip)");
+    assert_eq!(h.state().as_ref().unwrap().settings.preferred_kinds, [PackageKind::PortableZip]);
+}

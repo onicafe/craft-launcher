@@ -318,6 +318,28 @@ impl LauncherUi {
             ui.label(RichText::new(tl!("Updates always use the format an app was installed with.")).size(12.0).color(t.muted));
         }
 
+        if self.caps.manage_apps && self.platform.is_some_and(|p| p.os == Os::Windows) {
+            section(ui, tl!("Installing on Windows"));
+            let default_kind = if crate::settings::is_portable_launcher() { PackageKind::PortableZip } else { PackageKind::Msi };
+            let mut choice = self
+                .settings
+                .preferred_kinds
+                .first()
+                .copied()
+                .filter(|k| matches!(k, PackageKind::Msi | PackageKind::PortableZip))
+                .unwrap_or(default_kind);
+            row(ui, tl!("Install new apps as"), 210.0, &mut |ui| {
+                let label = crate::i18n::t(choice.label());
+                egui::ComboBox::from_id_salt("windows-kind").selected_text(label).width(210.0).show_ui(ui, |ui| {
+                    for k in [PackageKind::Msi, PackageKind::PortableZip] {
+                        ui.selectable_value(&mut choice, k, crate::i18n::t(k.label()));
+                    }
+                });
+            });
+            self.settings.preferred_kinds = vec![choice];
+            ui.label(RichText::new(tl!("Updates always use the format an app was installed with.")).size(12.0).color(t.muted));
+        }
+
         if self.caps.manage_apps {
             section(ui, tl!("Running in the background"));
             if host.has_tray() {

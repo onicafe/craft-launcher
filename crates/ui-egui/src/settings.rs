@@ -104,7 +104,7 @@ pub struct Settings {
     /// Show a system notification when an installed app has an update.
     pub notify: bool,
     pub prereleases: bool,
-    /// Linux: the package format to prefer for new installs (empty: the system's own).
+    /// Linux and Windows: the package format to prefer for new installs (empty: the system's own).
     pub preferred_kinds: Vec<PackageKind>,
     /// Announcements and alerts from the release feed the user dismissed (by notice id).
     pub dismissed_notices: std::collections::BTreeSet<String>,
@@ -155,12 +155,19 @@ pub fn is_appimage() -> bool {
     false
 }
 
-/// Default package kinds preferred on Linux based on how the launcher itself was installed.
+/// Whether this launcher is running in portable mode (`portable.txt` sits next to its executable).
+pub fn is_portable_launcher() -> bool {
+    std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("portable.txt").is_file())).unwrap_or(false)
+}
+
+/// Default package kinds preferred based on how the launcher itself was installed.
 pub fn default_preferred_kinds() -> Vec<PackageKind> {
     if is_flatpak_sandbox() {
         vec![PackageKind::Flatpak]
     } else if is_appimage() {
         vec![PackageKind::AppImage]
+    } else if cfg!(windows) && is_portable_launcher() {
+        vec![PackageKind::PortableZip]
     } else {
         Vec::new()
     }
