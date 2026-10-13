@@ -1522,8 +1522,40 @@ fn windows_settings_offers_installer_and_portable_package_formats() {
 
     artcraft_launcher_ui_egui::i18n::set_test_lang(artcraft_launcher_ui_egui::i18n::Lang::EN);
     let sent = Rc::new(RefCell::new(Vec::new()));
-    let mut backend =
-        Some(WinBackend(Fake { events: events(), sent, manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) }));
+    let mut ev = events();
+    for (id, v) in [("vectorcraft", "0.7.0"), ("lightcraft", "0.4.0")] {
+        let mut r = release(id, v, NOW - 3600);
+        r.assets.push(Asset {
+            name: format!("{id}-{v}-windows-x64.msi"),
+            size: 120 << 20,
+            url: format!("https://github.com/storytold/{id}/releases/download/v{v}/{id}-{v}-windows-x64.msi"),
+            sha256: None,
+        });
+        r.assets.push(Asset {
+            name: format!("{id}-{v}-windows-x64-portable.zip"),
+            size: 110 << 20,
+            url: format!("https://github.com/storytold/{id}/releases/download/v{v}/{id}-{v}-windows-x64-portable.zip"),
+            sha256: None,
+        });
+        ev.push(Event::Latest { app: id.into(), latest: LatestRelease::Found(r), from: Origin::ArtCraftApi });
+    }
+    ev.push(Event::Detected {
+        app: "lightcraft".into(),
+        installed: Some(Installed {
+            version: version::parse("0.4.0"),
+            source: InstallSource::Msi,
+            location: r"C:\Program Files\LightCraft\lightcraft.exe".into(),
+            package: Some("{11111111-1111-1111-1111-111111111111}".into()),
+        }),
+    });
+    let mut backend = Some(WinBackend(Fake {
+        events: ev,
+        sent: sent.clone(),
+        manage: true,
+        pictures: Rc::default(),
+        asked: Vec::new(),
+        clock: Rc::new(Cell::new(NOW)),
+    }));
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -1539,6 +1571,31 @@ fn windows_settings_offers_installer_and_portable_package_formats() {
         None,
     );
     h.run_steps(6);
+
+    // 1. Per-app menu on an uninstalled app offers "Install as Portable (.zip)".
+    let install_btn = h.get_all_by_label("Install").next().unwrap().rect();
+    let beside =
+        |r: egui::Rect| install_btn.y_range().contains(r.center().y) && (install_btn.right()..install_btn.right() + 60.0).contains(&r.left());
+    h.get_all_by_label("…").find(|n| beside(n.rect())).unwrap().click();
+    h.run_steps(3);
+    sent.borrow_mut().clear();
+    h.get_by_label("Install as Portable (.zip)").click();
+    h.run_steps(3);
+    assert_eq!(h.state().as_ref().unwrap().settings.app_kinds.get("vectorcraft"), Some(&PackageKind::PortableZip));
+    assert!(sent.borrow().contains(&Command::Install { app: "vectorcraft".into() }));
+
+    // 2. Per-app menu on an MSI-installed app offers "Switch to Portable (.zip)".
+    let open_btn = h.get_all_by_label("Open").next().unwrap().rect();
+    let beside_open = |r: egui::Rect| open_btn.y_range().contains(r.center().y) && (open_btn.right()..open_btn.right() + 60.0).contains(&r.left());
+    h.get_all_by_label("…").find(|n| beside_open(n.rect())).unwrap().click();
+    h.run_steps(3);
+    sent.borrow_mut().clear();
+    h.get_by_label("Switch to Portable (.zip)").click();
+    h.run_steps(3);
+    assert_eq!(h.state().as_ref().unwrap().settings.app_kinds.get("lightcraft"), Some(&PackageKind::PortableZip));
+    assert!(sent.borrow().contains(&Command::Install { app: "lightcraft".into() }));
+
+    // 3. Global Settings offers "Installing on Windows" -> "Install new apps as".
     h.get_by_label("Settings").click();
     h.run_steps(4);
     h.get_by_label("Installing on Windows");

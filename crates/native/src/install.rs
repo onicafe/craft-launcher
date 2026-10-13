@@ -69,10 +69,28 @@ pub fn install(
         #[cfg(target_os = "macos")]
         PackageKind::Dmg => macos::install_dmg(app, &file, existing, job.paths, &macos::Expect::release(release)).map(|_| None),
         #[cfg(windows)]
-        PackageKind::Msi => windows::run_msi(&file, job.stop, &mut *job.phase).map(|_| None),
+        PackageKind::Msi => {
+            let r = windows::run_msi(&file, job.stop, &mut *job.phase).map(|_| None);
+            if r.is_ok()
+                && let Some(inst) = existing.filter(|i| i.source == InstallSource::Launcher)
+            {
+                let _ = portable::remove_portable(Path::new(&inst.location), previous, job.paths);
+            }
+            r
+        }
         #[cfg(windows)]
         PackageKind::PortableZip => {
-            portable::install_portable(app, &file, existing, previous, job.paths).map(|(bin, files)| Some(record(&version, kind, bin, files, false)))
+            let mut switch_err = None;
+            if existing.is_some_and(|i| i.source == InstallSource::Msi)
+                && let Err(e) = windows::uninstall_msi(app, job.stop, &mut *job.phase)
+            {
+                switch_err = Some(e);
+            }
+            match switch_err {
+                Some(e) => Err(e),
+                None => portable::install_portable(app, &file, existing, previous, job.paths)
+                    .map(|(bin, files)| Some(record(&version, kind, bin, files, false))),
+            }
         }
         #[cfg(target_os = "linux")]
         PackageKind::Deb | PackageKind::Rpm | PackageKind::Flatpak => linux::install_package(kind, &file, job.stop, &mut *job.phase).map(|_| None),
@@ -114,7 +132,28 @@ fn record(version: &str, kind: PackageKind, path: PathBuf, files: Vec<PathBuf>, 
 /// The package format to install `app` with: the format of the copy that's there (an update
 /// stays a `.deb` update), else the user's choice, else the best this system supports.
 pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, preferred: &[PackageKind]) -> Vec<PackageKind> {
+    choose_kinds_for(existing, record, preferred, None)
+}
+
+/// Like [`choose_kinds`], with an optional per-app format override `app_override` (used when the
+/// user explicitly chooses a format for an app or switches an installed app between `.msi` and
+/// portable `.zip`).
+pub fn choose_kinds_for(
+    existing: Option<&Installed>,
+    record: Option<&Record>,
+    preferred: &[PackageKind],
+    app_override: Option<PackageKind>,
+) -> Vec<PackageKind> {
     let available = available_kinds();
+    if let Some(k) = app_override.filter(|k| available.contains(k)) {
+        let mut kinds = vec![k];
+        for a in available {
+            if !kinds.contains(&a) {
+                kinds.push(a);
+            }
+        }
+        return kinds;
+    }
     if let Some(inst) = existing {
         let kind = match inst.source {
             InstallSource::Launcher => record.map(|r| r.kind).or({
@@ -1064,7 +1103,6 @@ fn files(root: &Path) -> Vec<PathBuf> {
 #[cfg(unix)]
 #[allow(dead_code)]
 mod tree {
-    pub use super::files;
     use super::*;
 
     /// Unpacks `file` and returns a staging folder laid out like `/usr/local`.
@@ -1121,7 +1159,7 @@ mod freebsd {
 
     fn install_from(app: &CraftApp, file: &Path, staging: &Path) -> Result<(PathBuf, Vec<PathBuf>, bool), String> {
         let tree = tree::unpack(app, file, staging)?;
-        let rel = tree::files(&tree);
+        let rel = files(&tree);
         let mut source = tree.into_os_string();
         source.push("/.");
         if which("pkexec").is_some() {
@@ -1729,7 +1767,7 @@ mod tests {
         );
         for file in [tree_style, flat_style] {
             let root = tree::unpack(app, &file, &dir.path().join("staging")).unwrap();
-            let files = tree::files(&root);
+            let files = files(&root);
             assert!(files.contains(&PathBuf::from("bin/wordcraft")), "{files:?}");
             assert!(files.contains(&PathBuf::from("share/applications/ai.storyteller.wordcraft.desktop")), "{files:?}");
             assert!(!files.iter().any(|f| f.ends_with("README.md")), "{files:?}");

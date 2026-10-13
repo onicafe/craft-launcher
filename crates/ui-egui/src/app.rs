@@ -243,7 +243,22 @@ impl LauncherUi {
         self.last_detect = self.backend.now();
     }
 
+    pub(crate) fn sync_options(&mut self) {
+        let options = BackendOptions {
+            kinds: self.settings.preferred_kinds.clone(),
+            app_kinds: self.settings.app_kinds.clone(),
+            prereleases: self.settings.prereleases,
+        };
+        if self.sent_options.as_ref() != Some(&options) {
+            self.backend.send(Command::Configure(options.clone()));
+            self.sent_options = Some(options);
+        }
+    }
+
     pub(crate) fn send(&mut self, command: Command) {
+        if matches!(command, Command::Install { .. } | Command::Uninstall { .. }) {
+            self.sync_options();
+        }
         self.backend.send(command);
     }
 
@@ -266,11 +281,7 @@ impl LauncherUi {
     /// Non-drawing work: runs every frame and also while the window is hidden in the tray.
     pub fn logic(&mut self, ctx: &egui::Context, host: &mut dyn Host) {
         set_current(crate::i18n::Lang::from_pref(&self.settings.language));
-        let options = BackendOptions { kinds: self.settings.preferred_kinds.clone(), prereleases: self.settings.prereleases };
-        if self.sent_options.as_ref() != Some(&options) {
-            self.backend.send(Command::Configure(options.clone()));
-            self.sent_options = Some(options);
-        }
+        self.sync_options();
         if !self.started {
             self.started = true;
             self.backend.send(Command::CheckForUpdates { force: false });

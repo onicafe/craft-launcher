@@ -106,6 +106,9 @@ pub struct Settings {
     pub prereleases: bool,
     /// Linux and Windows: the package format to prefer for new installs (empty: the system's own).
     pub preferred_kinds: Vec<PackageKind>,
+    /// Per-app package format overrides (`photocraft` → `PortableZip`, …).
+    #[serde(default)]
+    pub app_kinds: BTreeMap<String, PackageKind>,
     /// Announcements and alerts from the release feed the user dismissed (by notice id).
     pub dismissed_notices: std::collections::BTreeSet<String>,
     /// Updates already announced, so each version is announced once: app id → version.
@@ -132,6 +135,17 @@ impl Settings {
             Some(lang) => lang.name().to_string(),
             None => t("Auto").to_string(),
         }
+    }
+
+    /// The Windows package format (`Msi` or `PortableZip`) preferred for `app_id`: an explicit
+    /// per-app override if set, else the global preference, else the launcher's own format.
+    pub fn effective_windows_kind(&self, app_id: &str) -> PackageKind {
+        self.app_kinds
+            .get(app_id)
+            .copied()
+            .or_else(|| self.preferred_kinds.first().copied())
+            .filter(|k| matches!(k, PackageKind::Msi | PackageKind::PortableZip))
+            .unwrap_or_else(|| if is_portable_launcher() { PackageKind::PortableZip } else { PackageKind::Msi })
     }
 }
 
@@ -189,6 +203,7 @@ impl Default for Settings {
             notify: true,
             prereleases: false,
             preferred_kinds: default_preferred_kinds(),
+            app_kinds: BTreeMap::new(),
             dismissed_notices: std::collections::BTreeSet::new(),
             notified: BTreeMap::new(),
             last_check: None,
