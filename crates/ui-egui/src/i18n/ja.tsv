@@ -14,7 +14,7 @@
 # Left in English on purpose: product name "ArtCraft Launcher" (and its "Launcher" tag), suite
 # name "Craft App Suite",
 # app names (PhotoCraft, LightCraft, FilmCraft, DesignCraft, VectorCraft, PdfCraft, EffectCraft,
-# WordCraft, DeckCraft, GridCraft, CADCraft, SoundCraft), "GitHub", "Discord".
+# WordCraft, DeckCraft, GridCraft, CADCraft, SoundCraft, FigCraft), "GitHub", "Discord".
 # Shortcut keys keep their key-cap names (Shift, Alt, Ctrl, Cmd, Esc).
 # Trailing "…" (U+2026) must be preserved. Placeholders {name}, {n}, {version}, {count}, {v},
 # {what}, {unit}, {real}, {e} must appear in translation.
@@ -173,6 +173,7 @@ deckcraft	Presentations and slide shows	プレゼンテーションとスライ�
 gridcraft	Spreadsheets and data	表計算とデータ
 cadcraft	Computer-aided design and drafting	コンピューター支援設計と製図
 soundcraft	Recording, editing and mixing audio	オーディオの録音、編集、ミックス
+figcraft	Interface design and prototyping	インターフェースデザインとプロトタイピング
 
 # Contextual: month abbreviations for date rendering
 month	Jan	1月
@@ -351,3 +352,20 @@ filter	Installed	インストール済み
 	Install as Windows Installer (.msi)	Windows インストーラー (.msi) としてインストール
 	Switch to Portable (.zip)	ポータブル版 (.zip) に切り替え
 	Switch to Windows Installer (.msi)	Windows インストーラー (.msi) に切り替え
+	Install folder	インストール先フォルダー
+	Default install folder	既定のインストール先フォルダー
+	System default	システムの既定
+	Browse…	参照…
+	Use default	既定を使用
+	New installs use this folder. Updates stay in their current location.	新しいインストールにはこのフォルダーを使用します。更新時は現在の場所を維持します。
+	Custom folders use AppImage on Linux.	Linuxで任意のフォルダーにインストールする場合はAppImageを使用します。
+	The system manages install locations here.	この環境ではシステムがインストール先を管理します。
+@msg	couldn't use install folder {path}: {reason}	インストール先フォルダー {path} を使用できませんでした: {reason}
+@msg	this release has no AppImage for a custom install folder	このリリースには任意のインストール先フォルダーで使用できるAppImageがありません
+@msg	custom install folders aren't supported on this system	このシステムではインストール先フォルダーの変更に対応していません
+@msg	{path} already exists and wasn't installed by ArtCraft Launcher	{path} は既に存在し、ArtCraft Launcherでインストールされたものではありません
+@msg	couldn't move {path} to Trash ({reason}). Remove it in Finder instead.	{path} をゴミ箱に移動できませんでした（{reason}）。Finderで削除してください。
+	Apps are placed inside this folder.	アプリはこのフォルダー内に配置されます。
+	Replace what's there?	既存の項目を置き換えますか？
+	{path} already exists. Installing {name} will overwrite it.	{path} は既に存在します。{name} をインストールすると上書きされます。
+	Replace	置き換える
